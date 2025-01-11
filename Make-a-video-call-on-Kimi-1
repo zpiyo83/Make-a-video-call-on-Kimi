@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+ 
+"""
+Basic example of edge_tts usage.
+"""
+try:
+    import cv2
+except ModuleNotFoundError:
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python"])
+    import cv2
+
+try:
+    from openai import OpenAI
+    from openai.error import APIError  # 修改为从 openai.error 导入 APIError
+except ModuleNotFoundError:
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
+    from openai import OpenAI
+    from openai import APIError  # 修改为从 openai.error 导入 APIError
+
+import tkinter as tk
+from tkinter import ttk
+import asyncio  # 添加 asyncio 导入
+from pathlib import Path  # 添加 Path 导入
+import time  # 添加 time 导入
+import openai  # 添加 openai.error 导入
+
+client = OpenAI(
+    api_key="YOUR_API_KEY",
+    base_url="https://api.moonshot.cn/v1",
+)
+
+# 配置界面设置
+interval_options = {
+    "1张/5s": 5,
+    "1张/4s": 4,
+    "1张/3s": 3,
+    "1张/2s": 2,
+    "1张/1s": 1
+}
+
+def create_gui():
+    root = tk.Tk()
+    root.title("Kimi 语音通话")
+
+    # 时间间隔选择
+    interval_label = ttk.Label(root, text="请选择时间间隔:")
+    interval_label.grid(column=0, row=0, padx=10, pady=10)
+    interval_var = tk.StringVar()
+    interval_combobox = ttk.Combobox(root, textvariable=interval_var, values=list(interval_options.keys()))
+    interval_combobox.grid(column=1, row=0, padx=10, pady=10)
+    interval_combobox.current(0)  # 默认选择第一个选项
+
+    # 询问内容输入
+    question_label = ttk.Label(root, text="请输入您要询问的内容:")
+    question_label.grid(column=0, row=1, padx=10, pady=10)
+    question_entry = ttk.Entry(root, width=50)
+    question_entry.grid(column=1, row=1, padx=10, pady=10)
+
+    # 动态更新询问内容输入
+    new_question_label = ttk.Label(root, text="动态更新询问内容:")
+    new_question_label.grid(column=0, row=2, padx=10, pady=10)
+    new_question_entry = ttk.Entry(root, width=50)
+    new_question_entry.grid(column=1, row=2, padx=10, pady=10)
+
+    # 开始按钮
+    start_button = ttk.Button(root, text="开始通话", command=lambda: start_conversation(interval_var, question_entry, new_question_entry))
+    start_button.grid(column=0, row=3, columnspan=2, pady=10)
+
+    root.mainloop()
+
+def start_conversation(interval_var, question_entry, new_question_entry):
+    interval = interval_options[interval_var.get()]
+    question = question_entry.get()
+    asyncio.run(capture_and_upload(interval, question, new_question_entry))  # 使用 asyncio.run 替代手动创建和关闭事件循环
+
+async def capture_and_upload(interval, question, new_question_entry):
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # 实时显示摄像头画面
+        cv2.imshow('Camera', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        # 水平翻转图片
+        frame = cv2.flip(frame, 1)
+
+        # 保存图片
+        img_path = "captured_image.jpg"
+        cv2.imwrite(img_path, frame)
+
+        # 检查文件是否存在并且不为空
+        if not Path(img_path).exists() or Path(img_path).stat().st_size == 0:
+            print(f"Error: 文件 {img_path} 不存在或为空")
+            continue
+
+        try:
+            # 上传图片
+            file_object = client.files.create(file=Path(img_path), purpose="file-extract")  # 使用 Path 模块
+            file_content = client.files.content(file_id=file_object.id).text
+
+            # 检查是否有新的询问内容输入
+            new_question = new_question_entry.get()
+            if new_question:
+                question = new_question
+
+            # 调用 chat-completion
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是 Kimi，由 Moonshot AI 提供的人工智能助手，你更擅长中文和英文的对话。你会为用户提供安全，有帮助，准确的回答。同时，你会拒绝一切涉及恐怖主义，种族歧视，黄色暴力等问题的回答。Moonshot AI 为专有名词，不可翻译成其他语言。",
+                },
+                {
+                    "role": "system",
+                    "content": file_content,
+                },
+                {"role": "user", "content": question},
+            ]
+
+            completion = client.chat.completions.create(
+                model="moonshot-v1-32k",
+                messages=messages,
+                temperature=0.3,
+            )
+
+            response_text = completion.choices[0].message.content
+            print(response_text)
+
+            # 语音合成
+            communicate = edge_tts.Communicate(response_text, "zh-CN-YunxiaNeural")
+            await communicate.save("response.mp3")
+            # 播放语音
+            await communicate.play()  # 添加播放语音的代码
+
+        except APIError as e:  # 修改为捕获 APIError 异常
+            if "text extract error: 没有解析出内容" in str(e):
+                print(f"Error: {e}. Skipping this frame and capturing the next one.")
+                continue
+            else:
+                print(f"Error during file upload or chat completion: {e}")
+        except Exception as e:
+            print(f"Error during file upload or chat completion: {e}")
+
+        time.sleep(interval)
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    create_gui()
